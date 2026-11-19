@@ -17,11 +17,13 @@ EN: A Windows-app-style settings panel for adguardvpn-cli (Arch Linux and any
 import os
 import re
 import sys
+import time
 import pty
 import fcntl
 import shutil
 import select
 import termios
+import getpass
 import threading
 import subprocess
 import pathlib
@@ -71,13 +73,21 @@ def run_cli(*args, timeout=40, stdin_text=None):
 
 
 def fetch_locations():
-    """[(iso, страна, город, пинг)] — медленные сверху, быстрые внизу."""
-    out, _, _ = run_cli('list-locations', timeout=40)
+    """RU: [(iso, страна, город, пинг)] — медленные сверху, быстрые внизу.
+    До 3 попыток: CLI v1.8.3 иногда отдаёт пустой список с первого раза.
+    EN: [(iso, country, city, ping)] — slowest first, fastest last.
+    Up to 3 attempts: the CLI sometimes returns an empty list on the first call."""
     rows = []
-    for line in out.splitlines():
-        m = re.match(r'^([A-Z]{2})\s+(.+?)\s{2,}(.+?)\s{2,}(\d+)\s*$', line)
-        if m:
-            rows.append((m.group(1), m.group(2).strip(), m.group(3).strip(), int(m.group(4))))
+    for attempt in range(3):
+        out, _, _ = run_cli('list-locations', timeout=40)
+        for line in out.splitlines():
+            m = re.match(r'^([A-Z]{2})\s+(.+?)\s{2,}(.+?)\s{2,}(\d+)\s*$', line)
+            if m:
+                rows.append((m.group(1), m.group(2).strip(), m.group(3).strip(), int(m.group(4))))
+        if rows:
+            break
+        if attempt < 2:
+            time.sleep(1.5)   # RU: пауза перед повтором / EN: pause before retry
     rows.sort(key=lambda r: -r[3])
     return rows
 
@@ -137,17 +147,17 @@ def fetch_exclusions():
 DOMAIN_TOKEN_RE = re.compile(r'^[\w*.\-/:]+$')
 
 ALLOWED_PATH_ROOTS = (
-    HOME_DIR,                       # домашний каталог
-    '/run/media/rover',             # съёмные диски (BACK)
+    HOME_DIR,                        # RU: домашний каталог / EN: home directory
+    '/run/media/' + getpass.getuser(),   # RU: съёмные диски / EN: removable media
     '/tmp',
 )
 
 
 def safe_path(path):
     """RU: Нормализует путь пользователя (QFileDialog), отвергает '..' и
-    пути вне белого списка корней (HOME, /run/media/rover, /tmp).
+    пути вне белого списка корней (HOME, /run/media/<USER>, /tmp).
     EN: Normalizes a user-provided path (QFileDialog), rejects '..' segments
-    and anything outside the allowed roots (HOME, /run/media/rover, /tmp)."""
+    and anything outside the allowed roots (HOME, /run/media/<USER>, /tmp)."""
     p = os.path.normpath(os.path.abspath(os.path.expanduser(path)))
     if '..' in p.split(os.sep):
         return None
@@ -267,6 +277,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(APP_TITLE)
         self.resize(640, 560)
+        self._connected = False   # RU: до первого ответа CLI / EN: before the first CLI answer
         self.async_ = Async()
         self.async_.finished.connect(self.async_.on_finished)
 
@@ -281,7 +292,7 @@ class MainWindow(QMainWindow):
         self._load_all()
 
         self.timer = QTimer(self)
-        self.timer.timeout.connect(lambda: self._refresh_status(silent=True))
+        self.timer.timeout.connect(self._refresh_status)
         self.timer.start(5000)
 
     # ---------- вспомогательные
@@ -355,6 +366,7 @@ class MainWindow(QMainWindow):
             if not ok or not text:
                 return
             self.btn_toggle.setEnabled(False)
+            self.timer.stop()   # RU: не мигаем статусом, пока идёт подключение
             self.statusBar().showMessage('Подключаюсь…')
             self._run('conn', lambda: connect_with_password(loc, text),
                       self._on_connect_done)
@@ -362,6 +374,7 @@ class MainWindow(QMainWindow):
     def _on_connect_done(self, res):
         log, rc = res
         self.btn_toggle.setEnabled(True)
+        self.timer.start(5000)  # RU: возобновляем обновление статуса
         tail = ' '.join(log.split())[-160:] if log else ''
         if rc == 0:
             self.statusBar().showMessage('Подключено')
@@ -369,7 +382,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage('Ошибка подключения (код %s): %s' % (rc, tail))
         self._refresh_status()
 
-    def _refresh_status(self, silent=False):
+    def _refresh_status(self):
         self._run('st', fetch_status, self._apply_status)
 
     def _apply_status(self, res):
@@ -417,6 +430,7 @@ class MainWindow(QMainWindow):
             QLineEdit.Password)
         if not ok or not text:
             return
+        self.timer.stop()
         self._run('conn', lambda: connect_with_password(loc, text),
                   self._on_connect_done)
 
@@ -428,7 +442,8 @@ class MainWindow(QMainWindow):
 
         g1 = self._gray_group('Режим работы')
         self.cmb_mode = self._mk_combo(['tun', 'socks'])
-        self.cmb_mode.activated.connect(lambda *_: self._set('Mode', 'set-mode', self.cmb_mode.currentText()))
+        self._socks_widgets = []
+        self.cmb_mode.activated.connect(self._mode_changed)
         self.spn_sport = QSpinBox(); self.spn_sport.setRange(1024, 65535)
         self.spn_sport.editingFinished.connect(lambda: self._set('SOCKS port', 'set-socks-port', str(self.spn_sport.value())))
         self.edn_shost = QLineEdit()
@@ -437,6 +452,7 @@ class MainWindow(QMainWindow):
         self.edn_suser.editingFinished.connect(lambda: self._set('SOCKS username', 'set-socks-username', self.edn_suser.text()))
         self.edn_spass = QLineEdit(); self.edn_spass.setEchoMode(QLineEdit.Password)
         self.edn_spass.editingFinished.connect(lambda: self._set('SOCKS password', 'set-socks-password', self.edn_spass.text()))
+        self._socks_widgets = [self.spn_sport, self.edn_shost, self.edn_suser, self.edn_spass]
         g1.layout().addRow('Режим (TUN/SOCKS):', self.cmb_mode)
         g1.layout().addRow('SOCKS порт:', self.spn_sport)
         g1.layout().addRow('SOCKS хост:', self.edn_shost)
@@ -493,13 +509,20 @@ class MainWindow(QMainWindow):
         v.addStretch(1)
         return w
 
+    def _mode_changed(self, *_):
+        mode = self.cmb_mode.currentText()
+        for w in self._socks_widgets:
+            w.setEnabled(mode == 'socks')
+        self._set('Mode', 'set-mode', mode)
+
     def _apply_dns(self):
         val = self.edn_dns.text().strip()
         if val and re.match(r'^[\w.:\-]+$', val):
             self._set('DNS upstream', 'set-dns', val)
 
     def _set(self, label, subcmd, value):
-        """Применяет config set-* и обновляет статус-бар."""
+        """RU: применяет config set-* и показывает результат в статус-баре.
+        EN: applies a config set-* command and reports it in the status bar."""
         self.statusBar().showMessage('Сохраняю: %s = %s…' % (label, value))
         self._run('set:' + subcmd,
                   lambda: run_cli('config', subcmd, value, timeout=20),
@@ -507,7 +530,6 @@ class MainWindow(QMainWindow):
 
     def _set_done(self, label, value, res):
         out, err, rc = res
-        ok = (rc == 0) and ('updated' in out.lower() or 'error' not in err.lower())
         if rc == 0 and not err.strip():
             self.statusBar().showMessage('%s = %s — сохранено' % (label, value), 4000)
         else:
@@ -531,6 +553,9 @@ class MainWindow(QMainWindow):
         self.edn_shost.setText(cfg.get('SOCKS host', '127.0.0.1'))
         self.edn_suser.setText(cfg.get('SOCKS username', ''))
         self.edn_dns.setText(cfg_plain(cfg, 'DNS upstream') or '1.1.1.1')
+        # RU: SOCKS-поля активны только в режиме socks / EN: SOCKS fields only in socks mode
+        for w in self._socks_widgets:
+            w.setEnabled(cfg_plain(cfg, 'Mode') == 'socks')
         self.chk_sysdns.setChecked(cfg_onoff(cfg, 'Change system DNS'))
         self.cmb_route.setCurrentText(cfg_plain(cfg, 'Tunnel routing mode') or 'auto')
         self.cmb_proto.setCurrentText(cfg_plain(cfg, 'Protocol') or 'auto')
@@ -648,7 +673,7 @@ class MainWindow(QMainWindow):
         path = safe_path(path)
         if not path:
             QMessageBox.warning(self, 'Импорт CSV',
-                                'Путь отклонён: разрешены только домашний каталог, /run/media/rover и /tmp.')
+                                'Путь отклонён: разрешены только домашний каталог, /run/media/<USER> и /tmp.')
             return
         try:
             # utf-8-sig снимает BOM, если файл экспортирован отсюда же или из Excel
@@ -684,7 +709,7 @@ class MainWindow(QMainWindow):
         path = safe_path(path)
         if not path:
             QMessageBox.warning(self, 'Экспорт CSV',
-                                'Путь отклонён: разрешены только домашний каталог, /run/media/rover и /tmp.')
+                                'Путь отклонён: разрешены только домашний каталог, /run/media/<USER> и /tmp.')
             return
         try:
             # utf-8-sig (BOM) + CRLF — Excel открывает такой файл без вопросов
@@ -723,11 +748,12 @@ class MainWindow(QMainWindow):
         self._run('exc', fetch_exclusions, self._apply_exclusions)
 
     def _exc_del(self):
-        for it in self.lst_exc.selectedItems():
-            val = it.text()
-            self._run('excd:' + val,
-                      lambda v=val: run_cli('site-exclusions', 'remove', v),
-                      lambda res: self._apply_exclusions(fetch_exclusions()))
+        vals = [it.text() for it in self.lst_exc.selectedItems()]
+        if not vals:
+            return
+        # RU: один вызов CLI со списком / EN: a single CLI call for all selected items
+        self._run('excd', lambda: run_cli('site-exclusions', 'remove', *vals),
+                  lambda res: self._apply_exclusions(fetch_exclusions()))
 
     def _exc_clear(self):
         if QMessageBox.question(self, 'Очистка', 'Удалить ВСЕ исключения?') != QMessageBox.Yes:

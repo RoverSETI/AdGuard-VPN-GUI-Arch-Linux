@@ -46,20 +46,20 @@
 # Зависимости / Dependencies
 sudo pacman -S python-pyqt5 adguard-vpn-cli
 
-# Скопировать файлы / copy the files
-cp adguard-vpn-gui.py vpn-toggle.sh ~/instruments/   # или в ~/bin / or ~/bin
+# Скопировать файлы (или в любой каталог в $PATH) / copy files (or any dir in $PATH)
+cp adguard-vpn-gui.py vpn-toggle.sh ~/.local/bin/
 cp adguard-vpn-settings.desktop ~/.local/share/applications/
 
 # Alias в .bashrc / add to .bashrc
-alias vpn-on='~/instruments/vpn-toggle.sh up'
-alias vpn-off='~/instruments/vpn-toggle.sh down'
-alias vpn-config='python3 ~/instruments/adguard-vpn-gui.py >/dev/null 2>&1 & disown'
+alias vpn-on='~/.local/bin/vpn-toggle.sh up'
+alias vpn-off='~/.local/bin/vpn-toggle.sh down'
+alias vpn-config='python3 ~/.local/bin/adguard-vpn-gui.py >/dev/null 2>&1 & disown'
 ```
 
 **EN:**
 ```bash
 sudo pacman -S python-pyqt5 adguard-vpn-cli
-cp adguard-vpn-gui.py vpn-toggle.sh ~/instruments/   # or ~/bin
+cp adguard-vpn-gui.py vpn-toggle.sh ~/.local/bin/
 cp adguard-vpn-settings.desktop ~/.local/share/applications/
 # then add the three aliases above to your .bashrc
 ```
@@ -83,14 +83,14 @@ cp adguard-vpn-settings.desktop ~/.local/share/applications/
 2. **TTY выводит строки как CRLF**: `\r` в конце строк ломает разбор пинга. Обход: `tr -d '\r'` + чистка ANSI-кодов `sed 's/\x1b\[[0-9;]*m//g'`.
 3. **Флейка первого запроса**: список иногда пуст при первой попытке. Обход: до 3 попыток с паузой 2 с.
 
-Механика sudo: подключение запускается на отдельном PTY (`setsid` + `TIOCSCTTY`), prompt sudo перехватывается, пароль из GUI-диалога вводится один раз и нигде не хранится. Отключение идёт через `vpn.socket` без root. Файлы импорта читаются только из белого списка корней (HOME, `/run/media/rover`, `/tmp`) — выход через `..` отклоняется.
+Механика sudo: подключение запускается на отдельном PTY (`setsid` + `TIOCSCTTY`), prompt sudo перехватывается, пароль из GUI-диалога вводится один раз и нигде не хранится. Отключение идёт через `vpn.socket` без root. Файлы импорта читаются только из белого списка корней (HOME, `/run/media/<USER>`, `/tmp`) — выход через `..` отклоняется.
 
 **EN** — three CLI v1.8.3 bugs found in the field, with workarounds:
 1. **Russian locale**: `list-locations` fails with `exit 12` ("Failed to get locations list") under `LANG=ru_RU.UTF-8`. Workaround: every CLI call runs with `LC_ALL=C`.
 2. **TTY output uses CRLF**: trailing `\r` breaks ping parsing. Workaround: `tr -d '\r'` + ANSI stripping via `sed 's/\x1b\[[0-9;]*m//g'`.
 3. **Flaky first request**: the list is sometimes empty on the first call. Workaround: up to 3 retries with a 2 s pause.
 
-Sudo mechanics: connect runs on a dedicated PTY (`setsid` + `TIOCSCTTY`), the sudo prompt is intercepted and the password from the GUI dialog is typed once — never stored. Disconnect uses `vpn.socket` without root. Import files are only read from the allowed roots (HOME, `/run/media/rover`, `/tmp`); any `..` path is rejected.
+Sudo mechanics: connect runs on a dedicated PTY (`setsid` + `TIOCSCTTY`), the sudo prompt is intercepted and the password from the GUI dialog is typed once — never stored. Disconnect uses `vpn.socket` without root. Import files are only read from the allowed roots (HOME, `/run/media/<USER>`, `/tmp`); any `..` path is rejected.
 
 ---
 

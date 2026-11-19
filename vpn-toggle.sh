@@ -29,8 +29,8 @@
 # C locale is forced — CLI output stays English for the filters below.
 export LC_ALL=C
 
-# Пути к файлам
-ADGUARD_RESOLV="/home/rover/.local/share/adguardvpn-cli/resolv.conf"
+# Пути к файлам / File paths
+ADGUARD_RESOLV="$HOME/.local/share/adguardvpn-cli/resolv.conf"
 SYSTEM_RESOLV="/etc/resolv.conf"
 BACKUP_RESOLV="/etc/resolv.conf.bak"
 
