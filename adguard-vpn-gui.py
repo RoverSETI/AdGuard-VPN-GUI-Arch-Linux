@@ -35,12 +35,27 @@ from PyQt5.QtWidgets import (
     QFormLayout, QLabel, QPushButton, QComboBox, QLineEdit, QCheckBox, QSpinBox,
     QGroupBox, QTabWidget, QListWidget, QListWidgetItem, QPlainTextEdit,
     QMessageBox, QInputDialog, QFileDialog, QStyleFactory, QAbstractItemView,
+    QSizeGrip,
 )
 
 CLI = shutil.which('adguardvpn-cli') or '/usr/local/bin/adguardvpn-cli'
 HOME_DIR = os.path.expanduser('~')
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
-APP_TITLE = 'AdGuard VPN — Настройки'
+APP_TITLE = 'AdGuard VPN — Настройки / Settings'
+
+# Сдержанная палитра кнопок по смыслу / Reserved button palette by purpose:
+# зелёный — подключить/добавить, красный — отключить/удалить,
+# синий — работа с данными (буфер, CSV, список), серо-синий — информация,
+# оранжевый — деструктивные действия.
+# green = connect/add, red = disconnect/remove, blue = data actions
+# (clipboard, CSV, list), slate = informational, orange = destructive.
+UI_COLORS = {
+    'green':  '#2e7d32',
+    'red':    '#c62828',
+    'blue':   '#1565c0',
+    'slate':  '#455a64',
+    'orange': '#e65100',
+}
 
 
 # ---------------------------------------------------------------- CLI-слой
@@ -88,7 +103,13 @@ def fetch_locations():
             break
         if attempt < 2:
             time.sleep(1.5)   # RU: пауза перед повтором / EN: pause before retry
-    rows.sort(key=lambda r: -r[3])
+    # RU: только в GUI — противоположный терминалу порядок: быстрые сверху,
+    # медленные внизу (в терминальном vpn-toggle.sh — наоборот).
+    # EN: GUI-only order, opposite to the terminal script: fastest on top,
+    # slowest at the bottom (vpn-toggle.sh does it the other way around).
+    # Названия локаций — только английские (как выдаёт CLI) /
+    # Location names stay English-only, exactly as the CLI outputs them.
+    rows.sort(key=lambda r: r[3])
     return rows
 
 
@@ -284,18 +305,21 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(APP_TITLE)
         self.resize(640, 560)
+        self.setMinimumSize(520, 400)      # RU: ниже ломается вёрстка / EN: layout breaks below this
         self._connected = False   # RU: до первого ответа CLI / EN: before the first CLI answer
         self.async_ = Async()
         self.async_.finished.connect(self.async_.on_finished)
 
         tabs = QTabWidget()
         self.setCentralWidget(tabs)
-        tabs.addTab(self._tab_connect(), 'Подключение')
-        tabs.addTab(self._tab_settings(), 'Настройки')
-        tabs.addTab(self._tab_exclusions(), 'Исключения')
-        tabs.addTab(self._tab_service(), 'Сервис')
+        tabs.addTab(self._tab_connect(), 'Подключение / Connect')
+        tabs.addTab(self._tab_settings(), 'Настройки / Settings')
+        tabs.addTab(self._tab_exclusions(), 'Исключения / Exclusions')
+        tabs.addTab(self._tab_service(), 'Сервис / Service')
 
-        self.statusBar().showMessage('Загрузка…')
+        self.statusBar().showMessage('Загрузка… / Loading…')
+        # RU: явный захват-уголок для растяжения окна / EN: explicit size-grip corner
+        self.statusBar().addPermanentWidget(QSizeGrip(self.statusBar()))
         self._load_all()
 
         self.timer = QTimer(self)
@@ -303,6 +327,14 @@ class MainWindow(QMainWindow):
         self.timer.start(5000)
 
     # ---------- вспомогательные
+
+    def _style_btn(self, btn, color_key):
+        """RU: Цвет шрифта кнопки по смыслу; в неактивном состоянии — серый.
+        EN: Purpose-driven button font color; grey while disabled."""
+        c = UI_COLORS.get(color_key, UI_COLORS['slate'])
+        btn.setStyleSheet('QPushButton { color: %s; } '
+                          'QPushButton:disabled { color: #9e9e9e; }' % c)
+        return btn
 
     def _gray_group(self, title, layout_cls=QFormLayout):
         box = QGroupBox(title)
@@ -329,9 +361,9 @@ class MainWindow(QMainWindow):
         w = QWidget()
         v = QVBoxLayout(w)
 
-        st = QGroupBox('Состояние')
+        st = QGroupBox('Состояние / Status')
         sv = QHBoxLayout(st)
-        self.lbl_status = QLabel('Проверяю…')
+        self.lbl_status = QLabel('Проверяю… / Checking…')
         f = self.lbl_status.font()
         f.setBold(True)
         f.setPointSize(13)
@@ -342,15 +374,16 @@ class MainWindow(QMainWindow):
         sv.addWidget(self.btn_toggle)
         v.addWidget(st)
 
-        loc = QGroupBox('Локация')
+        loc = QGroupBox('Локация / Location')
         lv = QVBoxLayout(loc)
         self.cmb_loc = QComboBox()
-        self.cmb_loc.addItem('— Быстрое подключение (последняя/оптимальная) —', None)
+        self.cmb_loc.addItem('— Быстрое подключение / Fastest connection —', None)
         self.cmb_loc.currentIndexChanged.connect(self._loc_changed)
         lv.addWidget(self.cmb_loc)
         hb = QHBoxLayout()
-        self.btn_reload = QPushButton('Обновить список')
+        self.btn_reload = QPushButton('Обновить список / Reload list')
         self.btn_reload.clicked.connect(lambda: self._run('loc', fetch_locations, self._apply_locations))
+        self._style_btn(self.btn_reload, 'blue')
         hb.addWidget(self.btn_reload)
         hb.addStretch(1)
         lv.addLayout(hb)
@@ -368,13 +401,14 @@ class MainWindow(QMainWindow):
         else:
             loc = self.cmb_loc.currentData()
             text, ok = QInputDialog.getText(
-                self, 'Sudo', 'Пароль sudo для запуска VPN-демона:',
+                self, 'Sudo',
+                'Пароль sudo для запуска VPN-демона / Sudo password to start the VPN daemon:',
                 QLineEdit.Password)
             if not ok or not text:
                 return
             self.btn_toggle.setEnabled(False)
             self.timer.stop()   # RU: не мигаем статусом, пока идёт подключение
-            self.statusBar().showMessage('Подключаюсь…')
+            self.statusBar().showMessage('Подключаюсь… / Connecting…')
             self._run('conn', lambda: connect_with_password(loc, text),
                       self._on_connect_done)
 
@@ -383,15 +417,15 @@ class MainWindow(QMainWindow):
         self.btn_toggle.setEnabled(True)
         self.timer.start(5000)  # RU: возобновляем обновление статуса
         if rc == 0:
-            self.statusBar().showMessage('Подключено')
+            self.statusBar().showMessage('Подключено / Connected')
         else:
             # RU: полный текст ошибки — в диалог, короткий — в статус-бар
             # EN: full error text goes to a dialog, short tail — to the status bar
-            tail = ' '.join(log.split())[-300:] if log else '(пустой вывод CLI)'
+            tail = ' '.join(log.split())[-300:] if log else '(пустой вывод CLI / empty CLI output)'
             QMessageBox.warning(
-                self, 'Ошибка подключения',
-                'Код завершения: %s\n\n%s' % (rc, tail))
-            self.statusBar().showMessage('Ошибка подключения (код %s)' % rc, 8000)
+                self, 'Ошибка подключения / Connection error',
+                'Код завершения / Exit code: %s\n\n%s' % (rc, tail))
+            self.statusBar().showMessage('Ошибка подключения / Connection error (код / code %s)' % rc, 8000)
         self._refresh_status()
 
     def _refresh_status(self):
@@ -401,13 +435,15 @@ class MainWindow(QMainWindow):
         connected, loc, mode = res
         self._connected = connected
         if connected:
-            self.lbl_status.setText('🟢 Подключено: %s (%s)' % (loc, mode))
-            self.lbl_status.setStyleSheet('color: #2e7d32;')
-            self.btn_toggle.setText('Отключить')
+            self.lbl_status.setText('🟢 Подключено / Connected: %s (%s)' % (loc, mode))
+            self.lbl_status.setStyleSheet('color: %s;' % UI_COLORS['green'])
+            self.btn_toggle.setText('Отключить / Disconnect')
+            self._style_btn(self.btn_toggle, 'red')
         else:
-            self.lbl_status.setText('🔴 Отключено')
-            self.lbl_status.setStyleSheet('color: #c62828;')
-            self.btn_toggle.setText('Подключить')
+            self.lbl_status.setText('🔴 Отключено / Disconnected')
+            self.lbl_status.setStyleSheet('color: %s;' % UI_COLORS['red'])
+            self.btn_toggle.setText('Подключить / Connect')
+            self._style_btn(self.btn_toggle, 'green')
 
     def _apply_locations(self, rows):
         if isinstance(rows, Exception):
@@ -427,7 +463,7 @@ class MainWindow(QMainWindow):
             if i >= 0:
                 self.cmb_loc.setCurrentIndex(i)
         self.cmb_loc.blockSignals(False)
-        self.statusBar().showMessage('Локаций: %d' % len(rows))
+        self.statusBar().showMessage('Локаций / Locations: %d' % len(rows))
 
     def _loc_changed(self, idx):
         # Выбор в комбо сразу подключается (пароль спрашиваем тут же)
@@ -442,7 +478,8 @@ class MainWindow(QMainWindow):
         if self.btn_toggle.isEnabled() is False:
             return   # RU: подключение уже идёт / EN: a connection is already in progress
         text, ok = QInputDialog.getText(
-            self, 'Sudo', 'Пароль sudo для подключения к «%s»:' % loc,
+            self, 'Sudo',
+            'Пароль sudo для подключения к «%s» / Sudo password to connect to "%s":' % (loc, loc),
             QLineEdit.Password)
         if not ok or not text:
             return
@@ -457,7 +494,7 @@ class MainWindow(QMainWindow):
         w = QWidget()
         v = QVBoxLayout(w)
 
-        g1 = self._gray_group('Режим работы')
+        g1 = self._gray_group('Режим работы / Operating mode')
         self.cmb_mode = self._mk_combo(['tun', 'socks'])
         self._socks_widgets = []
         self.cmb_mode.activated.connect(self._mode_changed)
@@ -470,48 +507,48 @@ class MainWindow(QMainWindow):
         self.edn_spass = QLineEdit(); self.edn_spass.setEchoMode(QLineEdit.Password)
         self.edn_spass.editingFinished.connect(lambda: self._set('SOCKS password', 'set-socks-password', self.edn_spass.text()))
         self._socks_widgets = [self.spn_sport, self.edn_shost, self.edn_suser, self.edn_spass]
-        g1.layout().addRow('Режим (TUN/SOCKS):', self.cmb_mode)
-        g1.layout().addRow('SOCKS порт:', self.spn_sport)
-        g1.layout().addRow('SOCKS хост:', self.edn_shost)
-        g1.layout().addRow('SOCKS логин:', self.edn_suser)
-        g1.layout().addRow('SOCKS пароль:', self.edn_spass)
+        g1.layout().addRow('Режим / Mode (TUN/SOCKS):', self.cmb_mode)
+        g1.layout().addRow('SOCKS порт / port:', self.spn_sport)
+        g1.layout().addRow('SOCKS хост / host:', self.edn_shost)
+        g1.layout().addRow('SOCKS логин / user:', self.edn_suser)
+        g1.layout().addRow('SOCKS пароль / password:', self.edn_spass)
         v.addWidget(g1)
 
         g2 = self._gray_group('DNS')
         self.edn_dns = QLineEdit()
         self.edn_dns.editingFinished.connect(self._apply_dns)
-        self.chk_sysdns = QCheckBox('Менять системный DNS при подключении')
+        self.chk_sysdns = QCheckBox('Менять системный DNS при подключении / Change system DNS on connect')
         self.chk_sysdns.toggled.connect(
             lambda on: self._set('Change system DNS', 'set-change-system-dns', 'on' if on else 'off'))
         g2.layout().addRow('DNS upstream:', self.edn_dns)
         g2.layout().addRow('', self.chk_sysdns)
         v.addWidget(g2)
 
-        g3 = self._gray_group('Туннель и протокол')
+        g3 = self._gray_group('Туннель и протокол / Tunnel & protocol')
         self.cmb_route = self._mk_combo(['auto', 'script', 'none'])
         self.cmb_route.activated.connect(lambda *_: self._set('Tunnel routing mode', 'set-tun-routing-mode', self.cmb_route.currentText()))
         self.cmb_proto = self._mk_combo(['auto', 'http2', 'quic'])
         self.cmb_proto.activated.connect(lambda *_: self._set('Protocol', 'set-protocol', self.cmb_proto.currentText()))
         self.cmb_pq = self._mk_combo(['default', 'on', 'off'])
         self.cmb_pq.activated.connect(lambda *_: self._set('Post-quantum', 'set-post-quantum', self.cmb_pq.currentText()))
-        self.chk_earlyack = QCheckBox('TCP early ACK для исключений')
+        self.chk_earlyack = QCheckBox('TCP early ACK для исключений / for exclusions')
         self.chk_earlyack.toggled.connect(lambda on: self._set('Exclusions TCP early ACK', 'set-exclusions-tcp-early-ack', 'on' if on else 'off'))
-        g3.layout().addRow('Маршрутизация:', self.cmb_route)
-        g3.layout().addRow('Протокол:', self.cmb_proto)
+        g3.layout().addRow('Маршрутизация / Routing:', self.cmb_route)
+        g3.layout().addRow('Протокол / Protocol:', self.cmb_proto)
         g3.layout().addRow('Post-quantum:', self.cmb_pq)
         g3.layout().addRow('', self.chk_earlyack)
         v.addWidget(g3)
 
-        g4 = self._gray_group('Приватность и сервис')
-        self.chk_telemetry = QCheckBox('Отправлять анонимную статистику')
+        g4 = self._gray_group('Приватность и сервис / Privacy & service')
+        self.chk_telemetry = QCheckBox('Отправлять анонимную статистику / Send anonymized usage data')
         self.chk_telemetry.toggled.connect(lambda on: self._set('Send anonymized usage data', 'set-telemetry', 'on' if on else 'off'))
-        self.chk_crash = QCheckBox('Отправлять отчёты о сбоях')
+        self.chk_crash = QCheckBox('Отправлять отчёты о сбоях / Send crash reports')
         self.chk_crash.toggled.connect(lambda on: self._set('Crash reporting', 'set-crash-reporting', 'on' if on else 'off'))
-        self.chk_debug = QCheckBox('Отладочный лог')
+        self.chk_debug = QCheckBox('Отладочный лог / Debug logging')
         self.chk_debug.toggled.connect(lambda on: self._set('Debug logging', 'set-debug-logging', 'on' if on else 'off'))
-        self.chk_hints = QCheckBox('Показывать подсказки CLI')
+        self.chk_hints = QCheckBox('Показывать подсказки CLI / Show CLI hints')
         self.chk_hints.toggled.connect(lambda on: self._set('Show hints', 'set-show-hints', 'on' if on else 'off'))
-        self.chk_notify = QCheckBox('Уведомления о статусе')
+        self.chk_notify = QCheckBox('Уведомления о статусе / Status notifications')
         self.chk_notify.toggled.connect(lambda on: self._set('Show notifications', 'set-show-notifications', 'on' if on else 'off'))
         self.cmb_channel = self._mk_combo(['release', 'beta', 'nightly'])
         self.cmb_channel.activated.connect(lambda *_: self._set('Update channel', 'set-update-channel', self.cmb_channel.currentText()))
@@ -520,7 +557,7 @@ class MainWindow(QMainWindow):
         g4.layout().addRow('', self.chk_debug)
         g4.layout().addRow('', self.chk_hints)
         g4.layout().addRow('', self.chk_notify)
-        g4.layout().addRow('Канал обновлений:', self.cmb_channel)
+        g4.layout().addRow('Канал обновлений / Update channel:', self.cmb_channel)
         v.addWidget(g4)
 
         v.addStretch(1)
@@ -540,7 +577,7 @@ class MainWindow(QMainWindow):
     def _set(self, label, subcmd, value):
         """RU: применяет config set-* и показывает результат в статус-баре.
         EN: applies a config set-* command and reports it in the status bar."""
-        self.statusBar().showMessage('Сохраняю: %s = %s…' % (label, value))
+        self.statusBar().showMessage('Сохраняю / Saving: %s = %s…' % (label, value))
         self._run('set:' + subcmd,
                   lambda: run_cli('config', subcmd, value, timeout=20),
                   lambda res: self._set_done(label, value, res))
@@ -548,7 +585,7 @@ class MainWindow(QMainWindow):
     def _set_done(self, label, value, res):
         out, err, rc = res
         if rc == 0 and not err.strip():
-            self.statusBar().showMessage('%s = %s — сохранено' % (label, value), 4000)
+            self.statusBar().showMessage('%s = %s — сохранено / saved' % (label, value), 4000)
         else:
             self.statusBar().showMessage('%s: %s' % (label, (err or out).strip()[:120]), 6000)
 
@@ -590,7 +627,7 @@ class MainWindow(QMainWindow):
                   self.chk_crash, self.chk_debug, self.chk_hints, self.chk_notify,
                   self.cmb_channel):
             w.blockSignals(False)
-        self.statusBar().showMessage('Конфиг загружен', 3000)
+        self.statusBar().showMessage('Конфиг загружен / Config loaded', 3000)
 
     # ---------- вкладка «Исключения»
 
@@ -598,11 +635,11 @@ class MainWindow(QMainWindow):
         w = QWidget()
         v = QVBoxLayout(w)
 
-        g = self._gray_group('Режим исключений', QVBoxLayout)
+        g = self._gray_group('Режим исключений / Exclusion mode', QVBoxLayout)
         hb = QHBoxLayout()
         from PyQt5.QtWidgets import QRadioButton
-        self.rad_general = QRadioButton('General — VPN везде, кроме списка')
-        self.rad_selective = QRadioButton('Selective — VPN только в списке')
+        self.rad_general = QRadioButton('General — VPN везде, кроме списка / everywhere except list')
+        self.rad_selective = QRadioButton('Selective — VPN только в списке / only for list')
         self.rad_general.toggled.connect(lambda on: on and self._set_exc_mode('general'))
         self.rad_selective.toggled.connect(lambda on: on and self._set_exc_mode('selective'))
         hb.addWidget(self.rad_general)
@@ -610,33 +647,39 @@ class MainWindow(QMainWindow):
         g.layout().addLayout(hb)
         v.addWidget(g)
 
-        g2 = QGroupBox('Список сайтов')
+        g2 = QGroupBox('Список сайтов / Site list')
         v2 = QVBoxLayout(g2)
         self.lst_exc = QListWidget()
         self.lst_exc.setSelectionMode(QAbstractItemView.ExtendedSelection)
         v2.addWidget(self.lst_exc)
         hb2 = QHBoxLayout()
         self.edn_exc = QLineEdit()
-        self.edn_exc.setPlaceholderText('example.com, *.example.com или список через , ; / строку')
+        self.edn_exc.setPlaceholderText('example.com, *.example.com (RU: через , ; или строку / EN: comma, semicolon or line)')
         self.edn_exc.returnPressed.connect(self._exc_add)
-        btn_add = QPushButton('Добавить')
+        btn_add = QPushButton('Добавить / Add')
         btn_add.clicked.connect(self._exc_add)
-        btn_del = QPushButton('Удалить выбранные')
+        self._style_btn(btn_add, 'green')
+        btn_del = QPushButton('Удалить выбранные / Remove selected')
         btn_del.clicked.connect(self._exc_del)
-        btn_clear = QPushButton('Очистить всё')
+        self._style_btn(btn_del, 'red')
+        btn_clear = QPushButton('Очистить всё / Clear all')
         btn_clear.clicked.connect(self._exc_clear)
+        self._style_btn(btn_clear, 'orange')
         for b in (btn_add, btn_del, btn_clear):
             hb2.addWidget(b)
         v2.addWidget(self.edn_exc)
         v2.addLayout(hb2)
 
         hb3 = QHBoxLayout()
-        btn_paste = QPushButton('Вставить из буфера')
+        btn_paste = QPushButton('Вставить из буфера / Paste')
         btn_paste.clicked.connect(self._exc_paste)
-        btn_import = QPushButton('Импорт CSV…')
+        self._style_btn(btn_paste, 'blue')
+        btn_import = QPushButton('Импорт CSV / Import CSV…')
         btn_import.clicked.connect(self._exc_import)
-        btn_export = QPushButton('Экспорт CSV…')
+        self._style_btn(btn_import, 'blue')
+        btn_export = QPushButton('Экспорт CSV / Export CSV…')
         btn_export.clicked.connect(self._exc_export)
+        self._style_btn(btn_export, 'blue')
         for b in (btn_paste, btn_import, btn_export):
             hb3.addWidget(b)
         hb3.addStretch(1)
@@ -658,7 +701,7 @@ class MainWindow(QMainWindow):
         self.lst_exc.clear()
         for it in items:
             self.lst_exc.addItem(QListWidgetItem(it))
-        self.statusBar().showMessage('Исключений: %d (режим %s)' % (len(items), mode), 4000)
+        self.statusBar().showMessage('Исключений / Exclusions: %d (режим / mode %s)' % (len(items), mode), 4000)
 
     def _exc_add(self):
         domains = parse_domains(self.edn_exc.text())
@@ -671,44 +714,46 @@ class MainWindow(QMainWindow):
         text = QApplication.clipboard().text()
         domains = parse_domains(text)
         if not domains:
-            QMessageBox.information(self, 'Вставка',
-                                    'В буфере обмена не найдено ни одного домена.')
+            QMessageBox.information(self, 'Вставка / Paste',
+                                    'В буфере обмена не найдено ни одного домена. / No domains found in the clipboard.')
             return
         if QMessageBox.question(
-                self, 'Вставка из буфера',
-                'Найдено доменов: %d\n\n%s\n\nДобавить их в исключения?'
+                self, 'Вставка из буфера / Paste from clipboard',
+                'Найдено доменов / Domains found: %d\n\n%s\n\nДобавить их в исключения? / Add them to exclusions?'
                 % (len(domains), ', '.join(domains[:10]))) != QMessageBox.Yes:
             return
         self._exc_bulk_add(domains)
 
     def _exc_import(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, 'Открыть CSV со списком исключений',
-            HOME_DIR, 'CSV/Текст (*.csv *.txt);;Все файлы (*)')
+            self, 'Открыть CSV со списком исключений / Open exclusions CSV',
+            HOME_DIR, 'CSV/Текст (*.csv *.txt);;Все файлы / All files (*)')
         if not path:
             return
         path = safe_path(path)
         if not path:
-            QMessageBox.warning(self, 'Импорт CSV',
-                                'Путь отклонён: разрешены только домашний каталог, /run/media/<USER> и /tmp.')
+            QMessageBox.warning(self, 'Импорт CSV / Import CSV',
+                                'Путь отклонён: только домашний каталог, /run/media/<USER> и /tmp. / Path rejected: HOME, /run/media/<USER> and /tmp only.')
             return
         try:
             # utf-8-sig снимает BOM, если файл экспортирован отсюда же или из Excel
+            # utf-8-sig strips the BOM if the file was exported from here or from Excel
             with open(path, 'r', encoding='utf-8-sig', errors='replace') as f:
                 text = f.read()
         except OSError as e:
-            QMessageBox.warning(self, 'Импорт CSV', 'Не удалось прочитать файл: %s' % e)
+            QMessageBox.warning(self, 'Импорт CSV / Import CSV',
+                                'Не удалось прочитать файл / Failed to read file: %s' % e)
             return
         domains = parse_domains(text)
         if not domains:
             QMessageBox.information(
-                self, 'Импорт CSV',
-                'В файле не найдено ни одного домена.\n'
-                'Поддерживаются разделители: перенос строки, точка с запятой, запятая, таб.')
+                self, 'Импорт CSV / Import CSV',
+                'В файле не найдено ни одного домена. / No domains found in the file.\n'
+                'Разделители / Delimiters: перенос строки / newline, «;», «,», таб / tab.')
             return
         if QMessageBox.question(
-                self, 'Импорт CSV',
-                'Найдено доменов: %d\n\n%s\n\nДобавить их в исключения?'
+                self, 'Импорт CSV / Import CSV',
+                'Найдено доменов / Domains found: %d\n\n%s\n\nДобавить их в исключения? / Add them to exclusions?'
                 % (len(domains), ', '.join(domains[:10]))) != QMessageBox.Yes:
             return
         self._exc_bulk_add(domains)
@@ -716,32 +761,36 @@ class MainWindow(QMainWindow):
     def _exc_export(self):
         items = [self.lst_exc.item(i).text() for i in range(self.lst_exc.count())]
         if not items:
-            QMessageBox.information(self, 'Экспорт CSV', 'Список исключений пуст.')
+            QMessageBox.information(self, 'Экспорт CSV / Export CSV',
+                                    'Список исключений пуст. / Exclusion list is empty.')
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, 'Сохранить исключения в CSV',
+            self, 'Сохранить исключения в CSV / Save exclusions to CSV',
             os.path.join(HOME_DIR, 'adguard_exclusions.csv'), 'CSV (*.csv)')
         if not path:
             return
         path = safe_path(path)
         if not path:
-            QMessageBox.warning(self, 'Экспорт CSV',
-                                'Путь отклонён: разрешены только домашний каталог, /run/media/<USER> и /tmp.')
+            QMessageBox.warning(self, 'Экспорт CSV / Export CSV',
+                                'Путь отклонён: только домашний каталог, /run/media/<USER> и /tmp. / Path rejected: HOME, /run/media/<USER> and /tmp only.')
             return
         try:
             # utf-8-sig (BOM) + CRLF — Excel открывает такой файл без вопросов
+            # utf-8-sig (BOM) + CRLF — Excel opens it without complaints
             csv_text = '\r\n'.join(items) + '\r\n'
             pathlib.Path(path).write_text(csv_text, encoding='utf-8-sig', newline='')
         except OSError as e:
-            QMessageBox.warning(self, 'Экспорт CSV', 'Не удалось записать файл: %s' % e)
+            QMessageBox.warning(self, 'Экспорт CSV / Export CSV',
+                                'Не удалось записать файл / Failed to write file: %s' % e)
             return
-        self.statusBar().showMessage('Экспортировано доменов: %d → %s' % (len(items), path), 6000)
+        self.statusBar().showMessage('Экспортировано / Exported: %d → %s' % (len(items), path), 6000)
 
     def _exc_bulk_add(self, domains):
-        """Пачечное добавление: CLI вызывается группами по 100 доменов."""
+        """RU: Пачечное добавление: CLI вызывается группами по 100 доменов.
+        EN: Bulk add: the CLI is called in chunks of 100 domains."""
         total = len(domains)
         chunks = [domains[i:i + 100] for i in range(0, total, 100)]
-        self.statusBar().showMessage('Импорт: 0/%d…' % total)
+        self.statusBar().showMessage('Импорт / Import: 0/%d…' % total)
 
         def run_all():
             added, errs = 0, []
@@ -758,10 +807,11 @@ class MainWindow(QMainWindow):
     def _exc_bulk_done(self, res):
         added, errs = res
         if errs:
-            QMessageBox.warning(self, 'Импорт',
-                                'Добавлено: %d.\nОшибки CLI: %s' % (added, ' | '.join(errs[:5])))
+            QMessageBox.warning(self, 'Импорт / Import',
+                                'Добавлено / Added: %d.\nОшибки CLI / CLI errors: %s'
+                                % (added, ' | '.join(errs[:5])))
         else:
-            self.statusBar().showMessage('Добавлено доменов: %d' % added, 6000)
+            self.statusBar().showMessage('Добавлено / Added: %d' % added, 6000)
         self._run('exc', fetch_exclusions, self._apply_exclusions)
 
     def _exc_del(self):
@@ -773,7 +823,8 @@ class MainWindow(QMainWindow):
                   lambda res: self._apply_exclusions(fetch_exclusions()))
 
     def _exc_clear(self):
-        if QMessageBox.question(self, 'Очистка', 'Удалить ВСЕ исключения?') != QMessageBox.Yes:
+        if QMessageBox.question(self, 'Очистка / Clear',
+                                'Удалить ВСЕ исключения? / Remove ALL exclusions?') != QMessageBox.Yes:
             return
         self._run('excc', lambda: run_cli('site-exclusions', 'clear', stdin_text='y\n'),
                   lambda res: self._apply_exclusions(fetch_exclusions()))
@@ -786,16 +837,18 @@ class MainWindow(QMainWindow):
 
         hb = QHBoxLayout()
         for text, cb in (
-            ('Конфиг', self._svc_config),
-            ('Лицензия', self._svc_license),
-            ('Версия', self._svc_version),
-            ('Проверить обновления', self._svc_update),
+            ('Конфиг / Config', self._svc_config),
+            ('Лицензия / License', self._svc_license),
+            ('Версия / Version', self._svc_version),
+            ('Проверить обновления / Check updates', self._svc_update),
         ):
             b = QPushButton(text)
             b.clicked.connect(cb)
+            self._style_btn(b, 'slate')
             hb.addWidget(b)
-        btn_logs = QPushButton('Экспорт логов…')
+        btn_logs = QPushButton('Экспорт логов / Export logs…')
         btn_logs.clicked.connect(self._svc_logs)
+        self._style_btn(btn_logs, 'slate')
         hb.addWidget(btn_logs)
         v.addLayout(hb)
 
@@ -810,26 +863,27 @@ class MainWindow(QMainWindow):
     def _show_out(self, title, res):
         out, err, rc = res
         self.txt_out.setPlainText((out + ('\n[stderr]\n' + err if err.strip() else '')).strip())
-        self.statusBar().showMessage(title + ': код %d' % rc, 4000)
+        self.statusBar().showMessage(title + ': код / code %d' % rc, 4000)
 
     def _svc_config(self):
         self._run('svc:cfg', lambda: run_cli('config', 'show'),
-                  lambda res: self._show_out('Конфиг', res))
+                  lambda res: self._show_out('Конфиг / Config', res))
 
     def _svc_license(self):
         self._run('svc:lic', lambda: run_cli('license'),
-                  lambda res: self._show_out('Лицензия', res))
+                  lambda res: self._show_out('Лицензия / License', res))
 
     def _svc_version(self):
         self._run('svc:ver', lambda: run_cli('-v'),
-                  lambda res: self._show_out('Версия', res))
+                  lambda res: self._show_out('Версия / Version', res))
 
     def _svc_update(self):
         self._run('svc:upd', lambda: run_cli('check-update'),
-                  lambda res: self._show_out('Проверка обновлений', res))
+                  lambda res: self._show_out('Проверка обновлений / Update check', res))
 
     def _svc_logs(self):
-        path, _ = QFileDialog.getSaveFileName(self, 'Сохранить логи', os.path.join(HOME_DIR, 'adguard_vpn_logs.zip'))
+        path, _ = QFileDialog.getSaveFileName(self, 'Сохранить логи / Save logs',
+                                              os.path.join(HOME_DIR, 'adguard_vpn_logs.zip'))
         if not path:
             return
         self._run('svc:log', lambda: run_cli('export-logs', '-o', path, '-f', timeout=120),
