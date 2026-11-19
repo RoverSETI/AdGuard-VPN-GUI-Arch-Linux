@@ -239,7 +239,14 @@ def connect_with_password(location, password):
         os.close(master)
     except OSError:
         pass
-    return clean(''.join(log)), p.returncode
+    # RU: ждём завершения, иначе returncode = None («код None» в статус-баре)
+    # EN: wait for exit, otherwise returncode stays None
+    try:
+        rc = p.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        p.terminate()
+        rc = p.returncode if p.returncode is not None else 124
+    return clean(''.join(log)), rc
 
 
 # ------------------------------------------------------------- асинхронный мост
@@ -375,11 +382,16 @@ class MainWindow(QMainWindow):
         log, rc = res
         self.btn_toggle.setEnabled(True)
         self.timer.start(5000)  # RU: возобновляем обновление статуса
-        tail = ' '.join(log.split())[-160:] if log else ''
         if rc == 0:
             self.statusBar().showMessage('Подключено')
         else:
-            self.statusBar().showMessage('Ошибка подключения (код %s): %s' % (rc, tail))
+            # RU: полный текст ошибки — в диалог, короткий — в статус-бар
+            # EN: full error text goes to a dialog, short tail — to the status bar
+            tail = ' '.join(log.split())[-300:] if log else '(пустой вывод CLI)'
+            QMessageBox.warning(
+                self, 'Ошибка подключения',
+                'Код завершения: %s\n\n%s' % (rc, tail))
+            self.statusBar().showMessage('Ошибка подключения (код %s)' % rc, 8000)
         self._refresh_status()
 
     def _refresh_status(self):
@@ -406,8 +418,10 @@ class MainWindow(QMainWindow):
         self.cmb_loc.clear()
         self.cmb_loc.addItem('— Быстрое подключение (последняя/оптимальная) —', None)
         for iso, country, city, ping in rows:
-            self.cmb_loc.addItem('%-3s %s, %s (%d ms)' % (iso, city, country, ping),
-                                 city + ', ' + country)
+            # RU: передаём CLI ISO-код — он его гарантированно понимает;
+            # формат «Город, Страна» CLI отвергает («no location with the specified city»)
+            # EN: pass the ISO code — the CLI accepts it for sure; "City, Country" is rejected
+            self.cmb_loc.addItem('%-3s %s, %s (%d ms)' % (iso, city, country, ping), iso)
         if cur:
             i = self.cmb_loc.findData(cur)
             if i >= 0:
@@ -425,11 +439,14 @@ class MainWindow(QMainWindow):
         self._toggle_connect_to(loc)
 
     def _toggle_connect_to(self, loc):
+        if self.btn_toggle.isEnabled() is False:
+            return   # RU: подключение уже идёт / EN: a connection is already in progress
         text, ok = QInputDialog.getText(
             self, 'Sudo', 'Пароль sudo для подключения к «%s»:' % loc,
             QLineEdit.Password)
         if not ok or not text:
             return
+        self.btn_toggle.setEnabled(False)
         self.timer.stop()
         self._run('conn', lambda: connect_with_password(loc, text),
                   self._on_connect_done)
